@@ -1,0 +1,70 @@
+name: Package KimiXlsx
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.cs'
+      - '**/*.csproj'
+      - '.github/workflows/package.yml'
+
+jobs:
+  package:
+    name: Package ${{ matrix.rid }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rid:
+          - linux-x64
+          - linux-arm64
+          - win-x64
+          - win-arm64
+          - osx-x64
+          - osx-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish single-file binary
+        run: |
+          dotnet publish KimiXlsx.csproj \
+            -c Release \
+            -r "${{ matrix.rid }}" \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:PlatformTarget=AnyCPU \
+            -o "dist/${{ matrix.rid }}" \
+            --nologo
+
+      - name: Smoke test Linux x64 binary
+        if: matrix.rid == 'linux-x64'
+        run: |
+          chmod +x dist/linux-x64/KimiXlsx
+          dist/linux-x64/KimiXlsx help
+
+      - name: Create archive
+        run: |
+          cd dist/${{ matrix.rid }}
+          if [[ "${{ matrix.rid }}" == win-* ]]; then
+            zip -r "../KimiXlsx-${{ matrix.rid }}.zip" .
+          else
+            tar -czf "../KimiXlsx-${{ matrix.rid }}.tar.gz" .
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KimiXlsx-${{ matrix.rid }}
+          path: |
+            dist/KimiXlsx-${{ matrix.rid }}.zip
+            dist/KimiXlsx-${{ matrix.rid }}.tar.gz
+          if-no-files-found: error
