@@ -1,13 +1,28 @@
-name: Package KimiXlsx
+name: Release KimiXlsx
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create or update'
+        required: true
+        default: 'v0.1.0'
+      prerelease:
+        description: 'Mark the GitHub Release as prerelease'
+        required: true
+        type: boolean
+        default: false
   push:
+    tags:
+      - 'v*'
     branches: [main]
     paths:
       - '**/*.cs'
       - '**/*.csproj'
       - '.github/workflows/package.yml'
+
+permissions:
+  contents: write
 
 jobs:
   package:
@@ -52,15 +67,17 @@ jobs:
           dist/linux-x64/KimiXlsx help
 
       - name: Create archive
+        shell: bash
         run: |
-          cd dist/${{ matrix.rid }}
+          set -euo pipefail
+          cd "dist/${{ matrix.rid }}"
           if [[ "${{ matrix.rid }}" == win-* ]]; then
             zip -r "../KimiXlsx-${{ matrix.rid }}.zip" .
           else
             tar -czf "../KimiXlsx-${{ matrix.rid }}.tar.gz" .
           fi
 
-      - name: Upload artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: KimiXlsx-${{ matrix.rid }}
@@ -68,3 +85,67 @@ jobs:
             dist/KimiXlsx-${{ matrix.rid }}.zip
             dist/KimiXlsx-${{ matrix.rid }}.tar.gz
           if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download packaged binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: KimiXlsx-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          prerelease_flag=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            prerelease_flag=(--prerelease)
+          fi
+
+          notes_file=/tmp/kimi-xlsx-release-notes.md
+          printf '%s\n' \
+            'Cross-platform KimiXlsx single-file binaries.' \
+            '' \
+            'Assets:' \
+            '- Linux: x64, arm64' \
+            '- Windows: x64, arm64' \
+            '- macOS: x64, arm64' \
+            '' \
+            'Linux x64 is smoke-tested in CI with `KimiXlsx help`.' \
+            'Windows and macOS binaries are cross-published by .NET on Linux and should be smoke-tested on native machines before production use.' \
+            > "$notes_file"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "KimiXlsx $RELEASE_TAG" \
+              --notes-file "$notes_file" \
+              "${prerelease_flag[@]}"
+          fi
+
+      - name: List release assets
+        shell: bash
+        run: gh release view "$RELEASE_TAG" --json tagName,url,assets
